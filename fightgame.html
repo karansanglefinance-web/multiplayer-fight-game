@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>3-Player Turn-Based Fighting Game</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    background: #121212;
+    color: #eee;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+  }
+  h1 {
+    color: #4caf50;
+  }
+  #game {
+    max-width: 400px;
+    width: 100%;
+    background: #222;
+    border-radius: 10px;
+    padding: 20px;
+    box-shadow: 0 0 10px #4caf50;
+  }
+  .players {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 15px;
+  }
+  .player {
+    flex: 1;
+    margin: 0 5px;
+    background: #333;
+    border-radius: 8px;
+    padding: 10px;
+    text-align: center;
+  }
+  .health-bar {
+    background: #555;
+    border-radius: 5px;
+    height: 20px;
+    margin-top: 5px;
+    position: relative;
+  }
+  .health-fill {
+    background: #4caf50;
+    height: 100%;
+    border-radius: 5px 0 0 5px;
+    width: 100%;
+    transition: width 0.5s ease;
+  }
+  .current-turn {
+    border: 2px solid #4caf50;
+  }
+  button {
+    margin-top: 10px;
+    padding: 10px 20px;
+    background: #4caf50;
+    border: none;
+    border-radius: 8px;
+    color: #121212;
+    font-weight: bold;
+    cursor: pointer;
+    width: 48%;
+  }
+  button:disabled {
+    background: #777;
+    cursor: not-allowed;
+  }
+  #status {
+    margin-top: 15px;
+    min-height: 40px;
+    font-weight: bold;
+  }
+  #join-section {
+    margin-bottom: 20px;
+  }
+  input#player-name {
+    padding: 8px;
+    border-radius: 5px;
+    border: none;
+    width: 60%;
+    margin-right: 10px;
+  }
+  button#join-btn {
+    background: #2196f3;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    padding: 9px 15px;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<h1>3-Player Turn-Based Fighting Game</h1>
+
+<div id="join-section">
+  <input id="player-name" placeholder="Enter your name" />
+  <button id="join-btn">Join Game</button>
+</div>
+
+<div id="game" style="display:none;">
+  <div class="players" id="players-container"></div>
+  <div>
+    <button id="attack-btn" disabled>Attack</button>
+    <button id="defend-btn" disabled>Defend</button>
+  </div>
+  <div id="status"></div>
+</div>
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+<script>
+  // Your Firebase config
+  const firebaseConfig = {
+    apiKey: "AIzaSyA_ifiMAOROk_symyJm6CLozzSln91gKP0",
+    authDomain: "multiplayerfightgame.firebaseapp.com",
+    databaseURL: "https://multiplayerfightgame-default-rtdb.firebaseio.com",
+    projectId: "multiplayerfightgame",
+    storageBucket: "multiplayerfightgame.appspot.com",
+    messagingSenderId: "138365472977",
+    appId: "1:138365472977:web:24348f0cfc3b193649f5f0"
+  };
+
+  // Initialize Firebase
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+
+  const joinSection = document.getElementById('join-section');
+  const playerNameInput = document.getElementById('player-name');
+  const joinBtn = document.getElementById('join-btn');
+  const gameDiv = document.getElementById('game');
+  const playersContainer = document.getElementById('players-container');
+  const attackBtn = document.getElementById('attack-btn');
+  const defendBtn = document.getElementById('defend-btn');
+  const statusDiv = document.getElementById('status');
+
+  let playerId = null;  // 'player1', 'player2', or 'player3'
+  let playerName = '';
+  const gameId = 'default-game-room'; // fixed room for simplicity
+  const gameRef = db.ref('games/' + gameId);
+  let playersData = {};
+  let currentTurn = null;
+  let isGameOver = false;
+
+  joinBtn.onclick = async () => {
+    playerName = playerNameInput.value.trim();
+    if (!playerName) {
+      alert("Please enter your name");
+      return;
+    }
+
+    // Assign player slot if available
+    const snapshot = await gameRef.child('players').once('value');
+    const players = snapshot.val() || {};
+
+    if (!players.player1) playerId = 'player1';
+    else if (!players.player2) playerId = 'player2';
+    else if (!players.player3) playerId = 'player3';
+    else {
+      alert('Game is full (3 players max). Try later.');
+      return;
+    }
+
+    await gameRef.child('players/' + playerId).set({
+      name: playerName,
+      health: 100,
+      defending: false
+    });
+
+    joinSection.style.display = 'none';
+    gameDiv.style.display = 'block';
+    listenForGameUpdates();
+    statusDiv.textContent = 'Waiting for other players to join...';
+  };
+
+  function listenForGameUpdates() {
+    gameRef.on('value', snapshot => {
+      const game = snapshot.val();
+      if (!game) return;
+
+      playersData = game.players || {};
+      currentTurn = game.currentTurn || null;
+      isGameOver = game.isGameOver || false;
+
+      renderPlayers();
+      updateButtons();
+      updateStatus();
+
+      if (!currentTurn && Object.keys(playersData).length === 3 && !isGameOver) {
+        gameRef.update({ currentTurn: 'player1', isGameOver: false });
+      }
+    });
+  }
+
+  function renderPlayers() {
+    playersContainer.innerHTML = '';
+    Object.entries(playersData).forEach(([id, player]) => {
+      const playerDiv = document.createElement('div');
+      playerDiv.classList.add('player');
+      if (id === currentTurn) playerDiv.classList.add('current-turn');
+      playerDiv.innerHTML = `
+        <strong>${player.name}</strong>
+        <div class="health-bar" title="Health: ${player.health}">
+          <div class="health-fill" style="width: ${player.health}%"></div>
+        </div>
+        <div>${player.health} HP</div>
+      `;
+      playersContainer.appendChild(playerDiv);
+    });
+  }
+
+  function updateButtons() {
+    if (isGameOver || currentTurn !== playerId) {
+      attackBtn.disabled = true;
+      defendBtn.disabled = true;
+    } else {
+      attackBtn.disabled = false;
+      defendBtn.disabled = false;
+    }
+  }
+
+  function updateStatus() {
+    if (isGameOver) {
+      const winner = getWinner();
+      if (winner) {
+        statusDiv.textContent = `🏆 ${playersData[winner].name} wins! Game over.`;
+      } else {
+        statusDiv.textContent = 'Game over. No winners.';
+      }
+      attackBtn.disabled = true;
+      defendBtn.disabled = true;
+    } else if (!currentTurn) {
+      statusDiv.textContent = 'Waiting for players...';
+    } else if (currentTurn === playerId) {
+      statusDiv.textContent = 'Your turn! Choose Attack or Defend.';
+    } else {
+      statusDiv.textContent = `Waiting for ${playersData[currentTurn]?.name}'s move...`;
+    }
+  }
+
+  function getWinner() {
+    const alivePlayers = Object.entries(playersData)
+      .filter(([_, p]) => p.health > 0)
+      .map(([id]) => id);
+    if (alivePlayers.length === 1) return alivePlayers[0];
+    return null;
+  }
+
+  async function takeTurn(action) {
+    if (isGameOver || currentTurn !== playerId) return;
+
+    // Pick random opponent alive
+    const opponents = Object.entries(playersData)
+      .filter(([id, p]) => id !== playerId && p.health > 0);
+    if (opponents.length === 0) {
+      statusDiv.textContent = 'No opponents left.';
+      return;
+    }
+    const targetId = opponents[Math.floor(Math.random() * opponents.length)][0];
+
+    let updates = {};
+    if (action === 'attack') {
+      let damage = Math.floor(Math.random() * 21) + 10; // 10-30 damage
+      if (playersData[targetId].defending) damage = Math.floor(damage / 2);
+      let newHealth = playersData[targetId].health - damage;
+      if (newHealth < 0) newHealth = 0;
+
+      updates[`players/${targetId}/health`] = newHealth;
+      updates[`players/${targetId}/defending`] = false; // reset defending
+
+      statusDiv.textContent = `${playersData[playerId].name} attacked ${playersData[targetId].name} for ${damage} damage!`;
+    } else if (action === 'defend') {
+      updates[`players/${playerId}/defending`] = true;
+      statusDiv.textContent = `${playersData[playerId].name} is defending this turn!`;
+    }
+
+    // Check if game is over after damage
+    const healthsAfter = { ...playersData };
+    if (action === 'attack') {
+      healthsAfter[targetId] = {...playersData[targetId], health: updates[`players/${targetId}/health`]};
+    }
+
+    const aliveCount = Object.values(healthsAfter).filter(p => p.health > 0).length;
+    if (aliveCount <= 1) {
+      updates.isGameOver = true;
+      updates.currentTurn = null;
+    } else {
+      // Switch turn to next alive player
+      const order = ['player1', 'player2', 'player3'];
+      let nextIndex = order.indexOf(playerId) + 1;
+      if (nextIndex > 2) nextIndex = 0;
+      // find next alive player
+      while (playersData[order[nextIndex]]?.health <= 0) {
+        nextIndex++;
+        if (nextIndex > 2) nextIndex = 0;
+      }
+      updates.currentTurn = order[nextIndex];
+    }
+
+    await gameRef.update(updates);
+  }
+
+  attackBtn.onclick = () => takeTurn('attack');
+  defendBtn.onclick = () => takeTurn('defend');
+</script>
+
+</body>
+</html>
